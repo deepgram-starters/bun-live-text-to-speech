@@ -9,6 +9,7 @@
     "dev": "bun --watch run server.ts"
   },
   "dependencies": {
+    "@deepgram/sdk": "^5.7.0",
     "@iarna/toml": "2.2.5",
     "jsonwebtoken": "9.0.2"
   },
