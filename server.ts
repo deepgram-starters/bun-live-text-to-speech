@@ -413,10 +413,17 @@ const server = Bun.serve<WsData>({
         if (clientWs.readyState !== WebSocket.OPEN) return;
         if (typeof data === "string") {
           clientWs.send(data);
+        } else if (typeof Blob !== "undefined" && data instanceof Blob) {
+          // Bun's ServerWebSocket.send() coerces a Blob to the string
+          // "[object Blob]"; unwrap it to bytes first.
+          data.arrayBuffer().then((buf) => {
+            if (clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(new Uint8Array(buf));
+            }
+          });
         } else if (
           data instanceof ArrayBuffer ||
           data instanceof Uint8Array ||
-          (typeof Blob !== "undefined" && data instanceof Blob) ||
           Buffer.isBuffer(data)
         ) {
           clientWs.send(data as any);
