@@ -6,7 +6,8 @@
   "license": "MIT",
   "scripts": {
     "start": "bun run server.ts",
-    "dev": "bun --watch run server.ts"
+    "dev": "bun --watch run server.ts",
+    "test": "bun test ./test"
   },
   "dependencies": {
     "@deepgram/sdk": "^5.9.0",
