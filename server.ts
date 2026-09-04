@@ -115,6 +115,8 @@ function getCorsHeaders(): Record<string, string> {
 }
 
 const RESERVED_CLOSE_CODES = [1004, 1005, 1006, 1015];
+const MAX_PENDING_MESSAGES = 128;
+const MAX_PENDING_BYTES = 512 * 1024;
 
 function getSafeCloseCode(code: number | undefined): number {
   return typeof code === "number" && code >= 1000 && code <= 4999 && !RESERVED_CLOSE_CODES.includes(code)
@@ -144,6 +146,25 @@ interface WsData {
   dgReady: boolean;
   // Browser control messages that arrived before the Deepgram socket opened.
   pending: any[];
+  pendingBytes: number;
+  pendingOverflowed: boolean;
+}
+
+function queuePending(ws: import("bun").ServerWebSocket<WsData>, message: any, bytes: number): boolean {
+  if (ws.data.pendingOverflowed) return false;
+  if (
+    ws.data.pending.length >= MAX_PENDING_MESSAGES ||
+    ws.data.pendingBytes + bytes > MAX_PENDING_BYTES
+  ) {
+    ws.data.pending = [];
+    ws.data.pendingBytes = 0;
+    ws.data.pendingOverflowed = true;
+    ws.close(1009, "Deepgram connection is not ready");
+    return false;
+  }
+  ws.data.pending.push(message);
+  ws.data.pendingBytes += bytes;
+  return true;
 }
 
 // ============================================================================
@@ -355,6 +376,8 @@ const server = Bun.serve<WsData>({
           dgConn: null,
           dgReady: false,
           pending: [],
+          pendingBytes: 0,
+          pendingOverflowed: false,
         },
         headers: {
           "Sec-WebSocket-Protocol": validProto,
@@ -406,6 +429,10 @@ const server = Bun.serve<WsData>({
           error instanceof Error ? error.message : "Failed to reach Deepgram",
           "PROVIDER_ERROR"
         );
+        clientWs.data.pending = [];
+        clientWs.data.pendingBytes = 0;
+        activeConnections.delete(clientWs as unknown as WebSocket);
+        clientWs.close(1011, "Failed to reach Deepgram");
         return;
       }
       clientWs.data.dgConn = dgConn;
@@ -470,8 +497,11 @@ const server = Bun.serve<WsData>({
           dispatchTtsControl(dgConn, msg);
         }
         clientWs.data.pending = [];
+        clientWs.data.pendingBytes = 0;
       } catch (error) {
         console.error("Deepgram connection did not open:", error);
+        clientWs.data.pending = [];
+        clientWs.data.pendingBytes = 0;
         sendError(
           clientWs as any,
           "Deepgram connection failed to open",
@@ -500,7 +530,7 @@ const server = Bun.serve<WsData>({
         return;
       }
       if (!clientWs.data.dgReady) {
-        clientWs.data.pending.push(msg);
+        queuePending(clientWs, msg, new TextEncoder().encode(message).byteLength);
         return;
       }
       dispatchTtsControl(clientWs.data.dgConn, msg);
@@ -517,6 +547,8 @@ const server = Bun.serve<WsData>({
       } catch {
         // already closed
       }
+      clientWs.data.pending = [];
+      clientWs.data.pendingBytes = 0;
       activeConnections.delete(clientWs as unknown as WebSocket);
     },
   },
