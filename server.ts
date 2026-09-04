@@ -114,6 +114,14 @@ function getCorsHeaders(): Record<string, string> {
   };
 }
 
+const RESERVED_CLOSE_CODES = [1004, 1005, 1006, 1015];
+
+function getSafeCloseCode(code: number | undefined): number {
+  return typeof code === "number" && code >= 1000 && code <= 4999 && !RESERVED_CLOSE_CODES.includes(code)
+    ? code
+    : 1000;
+}
+
 // ============================================================================
 // TYPES - TypeScript interfaces for WebSocket communication
 // ============================================================================
@@ -406,21 +414,19 @@ const server = Bun.serve<WsData>({
         console.log("Connected to Deepgram TTS API");
       });
 
-      // Deepgram -> browser. Binary audio frames are forwarded as-is; JSON
-      // control messages (Metadata / Flushed / Warning / ...) as text. This
-      // preserves the exact frames the browser previously received.
-      dgConn.on("message", (data: unknown) => {
+      // Blob conversion is asynchronous, so serialize every frame to retain
+      // the upstream order between final audio and Flushed.
+      async function forwardToClient(data: unknown) {
         if (clientWs.readyState !== WebSocket.OPEN) return;
         if (typeof data === "string") {
           clientWs.send(data);
         } else if (typeof Blob !== "undefined" && data instanceof Blob) {
           // Bun's ServerWebSocket.send() coerces a Blob to the string
           // "[object Blob]"; unwrap it to bytes first.
-          data.arrayBuffer().then((buf) => {
-            if (clientWs.readyState === WebSocket.OPEN) {
-              clientWs.send(new Uint8Array(buf));
-            }
-          });
+          const buffer = await data.arrayBuffer();
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(new Uint8Array(buffer));
+          }
         } else if (
           data instanceof ArrayBuffer ||
           data instanceof Uint8Array ||
@@ -430,6 +436,13 @@ const server = Bun.serve<WsData>({
         } else {
           clientWs.send(JSON.stringify(data));
         }
+      }
+
+      let sendChain = Promise.resolve();
+      dgConn.on("message", (data: unknown) => {
+        sendChain = sendChain
+          .then(() => forwardToClient(data))
+          .catch((error) => console.error("Failed to forward Deepgram message:", error));
       });
 
       dgConn.on("error", (error: any) => {
@@ -441,10 +454,10 @@ const server = Bun.serve<WsData>({
         );
       });
 
-      dgConn.on("close", () => {
-        console.log("Deepgram connection closed");
+      dgConn.on("close", (event: { code?: number; reason?: string }) => {
+        console.log(`Deepgram connection closed: ${event?.code ?? 1000} ${event?.reason ?? ""}`);
         if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.close(1000);
+          clientWs.close(getSafeCloseCode(event?.code), event?.reason || undefined);
         }
       });
 
